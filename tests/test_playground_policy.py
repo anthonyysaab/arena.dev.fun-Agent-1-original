@@ -5,7 +5,6 @@ from copy import deepcopy
 import pytest
 
 torch = pytest.importorskip("torch")
-pytest.importorskip("treys")
 
 contract_module = pytest.importorskip("devfun_poker_playground.model_contract")
 arena_module = pytest.importorskip("devfun_poker_playground.playground")

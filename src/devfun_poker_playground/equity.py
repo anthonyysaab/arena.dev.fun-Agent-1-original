@@ -1,10 +1,39 @@
-"""Small Monte Carlo equity helper used only as a Playground safety fallback."""
+"""Small Monte Carlo equity helper used only as a Playground safety fallback.
+
+Uses the vendored, MIT-licensed pure-Python ``treys`` evaluator (see
+``_vendor/treys/LICENSE``) so deployment images need no third-party wheels.
+The evaluator's lookup tables are built once per process and reused.
+"""
 
 from __future__ import annotations
 
 from random import Random
 
-from treys import Card, Deck, Evaluator
+from devfun_poker_playground._vendor.treys import Card, Deck, Evaluator
+
+_EVALUATOR: Evaluator | None = None
+_FULL_DECK: tuple[int, ...] | None = None
+
+
+def _shared_evaluator() -> Evaluator:
+    global _EVALUATOR
+    if _EVALUATOR is None:
+        _EVALUATOR = Evaluator()
+    return _EVALUATOR
+
+
+def _full_deck() -> tuple[int, ...]:
+    global _FULL_DECK
+    if _FULL_DECK is None:
+        _FULL_DECK = tuple(Deck.GetFullDeck())
+    return _FULL_DECK
+
+
+def prewarm() -> None:
+    """Build the card lookup tables ahead of the first timed decision."""
+
+    _shared_evaluator()
+    _full_deck()
 
 
 def _treys_card(value: str) -> int:
@@ -34,13 +63,13 @@ def estimate_equity(
     if len(known) != len(hero) + len(board):
         raise ValueError("known cards must be unique")
 
-    deck = [card for card in Deck.GetFullDeck() if card not in known]
+    deck = [card for card in _full_deck() if card not in known]
     missing_board = 5 - len(board)
     cards_needed = 2 * opponent_count + missing_board
     if cards_needed > len(deck):
         raise ValueError("not enough cards remain to simulate the table")
 
-    evaluator = Evaluator()
+    evaluator = _shared_evaluator()
     rng = Random(seed)
     equity = 0.0
     for _ in range(trials):
@@ -60,4 +89,4 @@ def estimate_equity(
     return equity / trials
 
 
-__all__ = ["estimate_equity"]
+__all__ = ["estimate_equity", "prewarm"]
