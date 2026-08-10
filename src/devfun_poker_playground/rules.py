@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from devfun_poker_playground.equity import estimate_equity
+from devfun_poker_playground.equity import board_improvement, estimate_equity
 from devfun_poker_playground.snapshots import (
     _AGGRESSIVE_ACTIONS,
     ArenaSnapshotError,
@@ -53,6 +53,17 @@ class ArenaAction:
 # street. Replaces the old flat -0.03 loosening that made almost any pair a
 # call against any bet size.
 _CALL_MARGINS = {"preflop": 0.0, "flop": 0.02, "turn": 0.05, "river": 0.08}
+
+# Board-contribution discount (v3), from three rated-match stack-offs where
+# the five-card hand was mostly the board's: trips-plus-kicker and hollow
+# two pair on paired boards kept calling into ranges stuffed with boats.
+# Discounted tiers (equity.board_improvement) condition harder on the
+# aggressor's range, demand a bigger margin, stop stacking off, and stop
+# barreling; ``fresh`` hands are untouched.
+_BOARD_DISCOUNT_RANGE_TIGHTEN = {"kicker": 0.60, "thin": 0.75}
+_BOARD_DISCOUNT_MARGINS = {"kicker": 0.12, "thin": 0.10}
+_BOARD_DISCOUNT_STACK_GATES = {"kicker": (0.18, 0.75), "thin": (0.30, 0.80)}
+_BOARD_DISCOUNT_AGGRESSION_FLOORS = {"kicker": 0.82, "thin": 0.78}
 
 
 class DecisionRules:
@@ -95,6 +106,15 @@ class DecisionRules:
     @staticmethod
     def _street(table: Mapping[str, Any]) -> str:
         return str(table.get("street") or "").casefold()
+
+    @staticmethod
+    def _board_tier(table: Mapping[str, Any]) -> str:
+        """Board-contribution tier of the hero holding (see board_improvement)."""
+
+        hero, _ = _hero_and_seats(table)
+        hole_cards = _cards(hero.get("holeCards"), "holeCards", 2)
+        board = _cards(table.get("boardCards"), "boardCards")
+        return board_improvement((hole_cards[0], hole_cards[1]), board)
 
     @staticmethod
     def _hero_seat_number(table: Mapping[str, Any]) -> int:
@@ -149,6 +169,10 @@ class DecisionRules:
             fraction *= 0.6
         elif bet_fraction > 0.6:
             fraction *= 0.8
+        # A bet into a hand that barely improves the board is aimed at the
+        # board itself: weight the aggressor even further toward hands that
+        # beat it.
+        fraction *= _BOARD_DISCOUNT_RANGE_TIGHTEN.get(self._board_tier(table), 1.0)
         return min(1.0, max(0.20, fraction))
 
     def _call_clears_margin(
@@ -161,7 +185,9 @@ class DecisionRules:
 
         if equity is None:
             return True
+        tier = self._board_tier(table)
         margin = _CALL_MARGINS.get(self._street(table), 0.08)
+        margin += _BOARD_DISCOUNT_MARGINS.get(tier, 0.0)
         if equity < self._pot_odds(table, allowed) + margin:
             return False
         hero, _ = _hero_and_seats(table)
@@ -169,7 +195,14 @@ class DecisionRules:
         to_call = _integer(allowed.get("callChips", 0), "callChips")
         if to_call >= 0.6 * stack and equity < 0.68:
             return False
-        return not (to_call >= 0.35 * stack and equity < 0.62)
+        if to_call >= 0.35 * stack and equity < 0.62:
+            return False
+        gate = _BOARD_DISCOUNT_STACK_GATES.get(tier)
+        if gate is not None:
+            stack_fraction, floor = gate
+            if to_call >= stack_fraction * stack and equity < floor:
+                return False
+        return True
 
     def decide(
         self,
@@ -293,6 +326,12 @@ class DecisionRules:
             # We already raised this street and got raised back: continuing
             # the war needs a near-nut hand, not a marginal edge vs random.
             aggression_floor = max(aggression_floor, 0.72)
+        if equity is not None:
+            # Betting the board's own hand only ever levers out worse board
+            # play; hands that beat it never fold. Near-nuts may still bet.
+            tier_floor = _BOARD_DISCOUNT_AGGRESSION_FLOORS.get(self._board_tier(table))
+            if tier_floor is not None:
+                aggression_floor = max(aggression_floor, tier_floor)
         if equity is not None and equity < aggression_floor:
             return self._passive_action(table, allowed, available, equity)
 

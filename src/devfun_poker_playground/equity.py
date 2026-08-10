@@ -7,6 +7,7 @@ The evaluator's lookup tables are built once per process and reused.
 
 from __future__ import annotations
 
+from collections import Counter
 from random import Random
 
 from devfun_poker_playground._vendor.treys import Card, Deck, Evaluator
@@ -38,6 +39,90 @@ def prewarm() -> None:
 
 def _treys_card(value: str) -> int:
     return Card.new(f"{value[0].upper()}{value[1].lower()}")
+
+
+# treys hand-class integers (lower is stronger).
+_CLASS_QUADS = 2
+_CLASS_FULL_HOUSE = 3
+_CLASS_TRIPS = 6
+_CLASS_TWO_PAIR = 7
+_CLASS_PAIR = 8
+
+
+def _pair_structure_class(counts: Counter) -> int:
+    """Hand class a paired board makes on its own (pair structure only)."""
+
+    shape = sorted(counts.values(), reverse=True)
+    if shape[0] >= 4:
+        return _CLASS_QUADS
+    if shape[0] == 3:
+        return _CLASS_FULL_HOUSE if len(shape) > 1 and shape[1] >= 2 else _CLASS_TRIPS
+    if len(shape) > 1 and shape[1] >= 2:
+        return _CLASS_TWO_PAIR
+    return _CLASS_PAIR
+
+
+def _structural_ranks(hand_class: int, combined: Counter) -> list[tuple[int, int]] | None:
+    """(rank, copies) pairs forming the class structure of the best hand."""
+
+    if hand_class == _CLASS_QUADS:
+        return [(max(r for r, c in combined.items() if c >= 4), 4)]
+    if hand_class == _CLASS_FULL_HOUSE:
+        trips = max(r for r, c in combined.items() if c >= 3)
+        pair = max(r for r, c in combined.items() if c >= 2 and r != trips)
+        return [(trips, 3), (pair, 2)]
+    if hand_class == _CLASS_TRIPS:
+        return [(max(r for r, c in combined.items() if c >= 3), 3)]
+    if hand_class == _CLASS_TWO_PAIR:
+        pairs = sorted((r for r, c in combined.items() if c >= 2), reverse=True)
+        return [(pairs[0], 2), (pairs[1], 2)]
+    if hand_class == _CLASS_PAIR:
+        return [(max(r for r, c in combined.items() if c >= 2), 2)]
+    return None
+
+
+def board_improvement(
+    hole_cards: tuple[str, str],
+    board_cards: tuple[str, ...],
+) -> str:
+    """Classify how much the hole cards improve on the board's own made hand.
+
+    Returns ``"fresh"`` when the holding genuinely upgrades the board (or the
+    board is unpaired / still preflop), ``"thin"`` when it keeps the board's
+    own hand class and only upgrades within it (pairing the lone side card of
+    a double-paired board, an overpair on a boat board), and ``"kicker"``
+    when the made hand is the board's own structure and the hole cards
+    contribute kickers at most. The discounted tiers lose to any holding
+    that connects with a paired board, so bets there are heavily
+    value-weighted against us no matter how strong our five cards look.
+    """
+
+    if len(board_cards) < 3:
+        return "fresh"
+    hole = [_treys_card(card) for card in hole_cards]
+    board = [_treys_card(card) for card in board_cards]
+    evaluator = _shared_evaluator()
+    hero_rank = evaluator.evaluate(hole, board)
+    if len(board) == 5 and hero_rank == evaluator.evaluate([], board):
+        return "kicker"  # the hole cards add nothing at all
+
+    board_counts = Counter(Card.get_rank_int(card) for card in board)
+    if max(board_counts.values()) < 2:
+        return "fresh"  # unpaired board: any improvement is real
+    board_class = _pair_structure_class(board_counts)
+    hero_class = evaluator.get_rank_class(hero_rank)
+    if hero_class < board_class:  # lower treys class = stronger hand
+        return "fresh"
+
+    combined = board_counts.copy()
+    for card in hole:
+        combined[Card.get_rank_int(card)] += 1
+    structural = _structural_ranks(hero_class, combined)
+    if structural is None:  # straight/flush classes never tie a paired board
+        return "fresh"
+    if all(board_counts.get(rank, 0) >= copies for rank, copies in structural):
+        return "kicker"
+    return "thin"
 
 
 def _chen_score(combo: tuple[int, int]) -> float:
@@ -161,4 +246,4 @@ def estimate_equity(
     return equity / trials
 
 
-__all__ = ["estimate_equity", "prewarm"]
+__all__ = ["board_improvement", "estimate_equity", "prewarm"]
