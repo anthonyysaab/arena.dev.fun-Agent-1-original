@@ -1,3 +1,0 @@
-# Chipzen platform allow-list only (see chipzen.validate.ALLOWED_PACKAGES).
-# The policy itself is pure stdlib + the vendored treys evaluator.
-chipzen-bot==0.3.2

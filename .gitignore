@@ -6,4 +6,6 @@ __pycache__/
 /artifacts/
 *.pyc
 /deploy/chipzen/*.tar.gz
+/deploy/devfun-arena/build/
+/deploy/devfun-arena/bundle.zip
 .handoff/
