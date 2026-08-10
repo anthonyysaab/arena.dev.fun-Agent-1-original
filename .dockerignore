@@ -1,0 +1,18 @@
+# Keep the Chipzen build context to: src/, artifacts/tiny-policy-pure.json,
+# deploy/chipzen/{bot.py,requirements.txt}.
+.git
+.gitignore
+.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+*.egg-info
+tests
+tools
+README.md
+THIRD_PARTY_NOTICES.md
+artifacts/*.pt
+deploy/chipzen/*.tar.gz
+deploy/chipzen/README.md
+deploy/chipzen/build.sh
+deploy/chipzen/build.ps1

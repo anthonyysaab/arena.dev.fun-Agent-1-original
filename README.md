@@ -37,3 +37,21 @@ payload = policy.decide(table_snapshot, deadline_s=12.0)
 
 `table_snapshot` is one fresh item from Arena's pending-actions response. A network client is a
 separate future layer; this package currently stops at producing a validated action payload.
+
+## Torch-free core and deployment builds
+
+The snapshot validation (`snapshots.py`), deterministic safety rails
+(`rules.py`), equity fallback (`equity.py`, with a vendored MIT-licensed
+`treys` under `_vendor/`), and the feature/label contract (`contract.py`) are
+torch-free. `PlaygroundPolicy` layers the trained PyTorch checkpoint on top;
+`PurePolicy` runs the same rails over JSON weights exported by
+`tools/export_pure_weights.py` (equivalence is covered by
+`tests/test_pure_model_equivalence.py`). Importing the package without torch
+installed keeps everything except `PlaygroundPolicy` usable.
+
+## Chipzen arena container
+
+`deploy/chipzen/` packages the policy as a [chipzen.ai](https://chipzen.ai)
+upload bot (sandboxed Docker image, pure-Python, ~30 MB): see
+[deploy/chipzen/README.md](deploy/chipzen/README.md) for the
+export → validate → build → upload pipeline.

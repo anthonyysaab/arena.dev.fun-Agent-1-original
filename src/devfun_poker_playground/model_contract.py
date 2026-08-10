@@ -1,43 +1,29 @@
-"""Inference-only contract shared with the separately trained checkpoint."""
+"""Inference-only contract shared with the separately trained checkpoint.
+
+The feature/label constants live in the torch-free
+:mod:`devfun_poker_playground.contract`; this module keeps the PyTorch
+surface (network definition, logits masking, checkpoint validation) and
+re-exports the constants for backward compatibility.
+"""
 
 from __future__ import annotations
 
 import torch
 from torch import Tensor, nn
 
-LABELS: tuple[str, ...] = ("fold", "check_call", "aggress")
+from devfun_poker_playground.contract import (
+    FEATURE_NAMES,
+    LABELS,
+    LEGALITY_FEATURE_INDEXES,
+)
 
-_RANKS = "23456789TJQKA"
-_SUITS = "cdhs"
-_CARD_CODES = tuple(f"{rank}{suit}" for rank in _RANKS for suit in _SUITS)
-_SCALAR_FEATURE_NAMES = (
-    "street_preflop",
-    "street_flop",
-    "street_turn",
-    "street_river",
-    "player_count",
-    "active_player_count",
-    "position",
-    "log_pot_bb",
-    "log_stack_bb",
-    "log_effective_stack_bb",
-    "log_to_call_bb",
-    "log_street_contribution_bb",
-    "log_current_bet_bb",
-    "log_min_raise_to_bb",
-    "pot_odds",
-    "spr",
-    "raises_current_street",
-    "legal_fold",
-    "legal_check_call",
-    "legal_aggress",
-    "hole_known_fraction",
-)
-FEATURE_NAMES: tuple[str, ...] = (
-    *(f"hole_{card}" for card in _CARD_CODES),
-    *(f"board_{card}" for card in _CARD_CODES),
-    *_SCALAR_FEATURE_NAMES,
-)
+__all__ = [
+    "FEATURE_NAMES",
+    "LABELS",
+    "TinyPolicy",
+    "mask_illegal_logits",
+    "validate_checkpoint_contract",
+]
 
 
 class TinyPolicy(nn.Module):
@@ -54,11 +40,7 @@ class TinyPolicy(nn.Module):
 
 
 def mask_illegal_logits(logits: Tensor, features: Tensor) -> Tensor:
-    legal_columns = [
-        FEATURE_NAMES.index(name)
-        for name in ("legal_fold", "legal_check_call", "legal_aggress")
-    ]
-    legal = features[..., legal_columns] > 0.5
+    legal = features[..., list(LEGALITY_FEATURE_INDEXES)] > 0.5
     if not torch.all(legal.any(dim=-1)):
         raise ValueError("each decision must have at least one legal action")
     return logits.masked_fill(~legal, torch.finfo(logits.dtype).min)
@@ -71,12 +53,3 @@ def validate_checkpoint_contract(checkpoint: dict[str, object]) -> None:
         raise ValueError("checkpoint feature names do not match the Playground feature contract")
     if tuple(checkpoint.get("labels", ())) != LABELS:
         raise ValueError("checkpoint labels do not match the Playground action contract")
-
-
-__all__ = [
-    "FEATURE_NAMES",
-    "LABELS",
-    "TinyPolicy",
-    "mask_illegal_logits",
-    "validate_checkpoint_contract",
-]
