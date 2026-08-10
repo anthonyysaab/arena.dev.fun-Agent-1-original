@@ -49,6 +49,12 @@ class ArenaAction:
         return payload
 
 
+# Extra equity demanded over raw pot odds to continue against a bet, by
+# street. Replaces the old flat -0.03 loosening that made almost any pair a
+# call against any bet size.
+_CALL_MARGINS = {"preflop": 0.0, "flop": 0.02, "turn": 0.05, "river": 0.08}
+
+
 class DecisionRules:
     """Family proposals plus deterministic Arena safety rails."""
 
@@ -61,7 +67,7 @@ class DecisionRules:
     def _family(self, features: tuple[float, ...]) -> str:
         raise NotImplementedError("policy backends must implement _family")
 
-    def _equity(self, table: Mapping[str, Any]) -> float | None:
+    def _equity(self, table: Mapping[str, Any], top_fraction: float = 1.0) -> float | None:
         if self.equity_trials == 0:
             return None
         hero, seats = _hero_and_seats(table)
@@ -83,7 +89,87 @@ class DecisionRules:
             opponents,
             trials=self.equity_trials,
             seed=trial_seed,
+            top_fraction=top_fraction,
         )
+
+    @staticmethod
+    def _street(table: Mapping[str, Any]) -> str:
+        return str(table.get("street") or "").casefold()
+
+    @staticmethod
+    def _hero_seat_number(table: Mapping[str, Any]) -> int:
+        return _integer(table.get("selfSeatNumber"), "selfSeatNumber", minimum=1)
+
+    @classmethod
+    def _aggressive_events(
+        cls, table: Mapping[str, Any], *, hero: bool, street: str | None = None
+    ) -> int:
+        """Count aggressive actions by hero (or by opponents) in recentEvents."""
+
+        hero_seat = cls._hero_seat_number(table)
+        count = 0
+        for raw_event in _sequence(table.get("recentEvents") or [], "recentEvents"):
+            event = _mapping(raw_event, "recentEvent")
+            if street is not None and str(event.get("street") or "").casefold() != street:
+                continue
+            summary_value = event.get("summary")
+            if summary_value is None:
+                continue
+            summary = _mapping(summary_value, "recentEvent.summary")
+            action = str(summary.get("action") or "").casefold()
+            if action not in _AGGRESSIVE_ACTIONS:
+                continue
+            seat_number = summary.get("seatNumber")
+            is_hero = isinstance(seat_number, int) and seat_number == hero_seat
+            if is_hero == hero:
+                count += 1
+        return count
+
+    def _call_top_fraction(
+        self, table: Mapping[str, Any], allowed: Mapping[str, Any]
+    ) -> float:
+        """How much of the opponent's range to consider when facing a bet.
+
+        The more they have raised this hand — and the bigger the bet in
+        front of us — the more their range is weighted toward strong made
+        hands, so the smaller the fraction of holdings we simulate against.
+        No aggression means no conditioning (1.0 = uniformly random).
+        """
+
+        to_call = _integer(allowed.get("callChips", 0), "callChips")
+        if to_call <= 0:
+            return 1.0
+        opponent_raises = self._aggressive_events(table, hero=False)
+        if opponent_raises == 0:
+            return 1.0
+        fraction = 0.75 * (0.8 ** (opponent_raises - 1))
+        pot = _integer(table.get("potChips"), "potChips")
+        bet_fraction = to_call / max(pot - to_call, 1)
+        if bet_fraction > 1.0:
+            fraction *= 0.6
+        elif bet_fraction > 0.6:
+            fraction *= 0.8
+        return min(1.0, max(0.20, fraction))
+
+    def _call_clears_margin(
+        self,
+        table: Mapping[str, Any],
+        allowed: Mapping[str, Any],
+        equity: float | None,
+    ) -> bool:
+        """Whether calling is justified: pot odds + street margin + stack gate."""
+
+        if equity is None:
+            return True
+        margin = _CALL_MARGINS.get(self._street(table), 0.08)
+        if equity < self._pot_odds(table, allowed) + margin:
+            return False
+        hero, _ = _hero_and_seats(table)
+        stack = _integer(hero.get("stackChips"), "hero stackChips")
+        to_call = _integer(allowed.get("callChips", 0), "callChips")
+        if to_call >= 0.6 * stack and equity < 0.68:
+            return False
+        return not (to_call >= 0.35 * stack and equity < 0.62)
 
     def decide(
         self,
@@ -108,7 +194,9 @@ class DecisionRules:
             action = self._deadline_action(table, allowed, available)
             return self._render(action, table, allowed, equity=None).to_payload()
 
-        equity = self._equity(table)
+        # Facing aggression, estimate equity against the strong part of the
+        # opponent's range instead of a uniformly random hand.
+        equity = self._equity(table, top_fraction=self._call_top_fraction(table, allowed))
         _, seats = _hero_and_seats(table)
         family = (
             self._short_handed_family(table, allowed, available, equity)
@@ -133,11 +221,14 @@ class DecisionRules:
         _, seats = _hero_and_seats(table)
         opponent_count = max(1, len(seats) - 1)
         aggression_floor = min(0.72, 0.52 + 0.05 * max(0, opponent_count - 1))
+        if self._street(table) == "preflop":
+            # Keep junk like K4o/J9o from min-raising into strength preflop.
+            aggression_floor += 0.04
         if any(action in available for action in ("bet", "raise")) and equity >= aggression_floor:
             return "aggress"
         if "check" in available:
             return "check_call"
-        if "call" in available and equity + 0.03 >= self._pot_odds(table, allowed):
+        if "call" in available and self._call_clears_margin(table, allowed, equity):
             return "check_call"
         return "fold"
 
@@ -151,7 +242,12 @@ class DecisionRules:
         if "check" in available:
             return "check", None
         pot_odds = self._pot_odds(table, allowed)
-        if "call" in available and equity is not None and equity >= max(0.60, pot_odds + 0.15):
+        if (
+            "call" in available
+            and equity is not None
+            and equity >= max(0.60, pot_odds + 0.15)
+            and self._call_clears_margin(table, allowed, equity)
+        ):
             return "call", None
         if "fold" in available:
             return "fold", None
@@ -166,10 +262,8 @@ class DecisionRules:
     ) -> tuple[str, int | None]:
         if "check" in available:
             return "check", None
-        if "call" in available:
-            pot_odds = self._pot_odds(table, allowed)
-            if equity is None or equity + 0.03 >= pot_odds:
-                return "call", None
+        if "call" in available and self._call_clears_margin(table, allowed, equity):
+            return "call", None
         if "fold" in available:
             return "fold", None
         if "call" in available:
@@ -191,6 +285,12 @@ class DecisionRules:
             and str(seat.get("status") or "").casefold() not in {"folded", "settled"}
         )
         aggression_floor = min(0.74, 0.50 + 0.04 * max(0, opponent_count - 1))
+        street = self._street(table)
+        to_call = _integer(allowed.get("callChips", 0), "callChips")
+        if to_call > 0 and self._aggressive_events(table, hero=True, street=street) > 0:
+            # We already raised this street and got raised back: continuing
+            # the war needs a near-nut hand, not a marginal edge vs random.
+            aggression_floor = max(aggression_floor, 0.72)
         if equity is not None and equity < aggression_floor:
             return self._passive_action(table, allowed, available, equity)
 
