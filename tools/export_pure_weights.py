@@ -50,6 +50,9 @@ def export_weights(checkpoint_path: Path) -> dict[str, Any]:
         "w2": state["network.2.weight"].double().tolist(),
         "b2": state["network.2.bias"].double().tolist(),
     }
+    table_sizes = checkpoint.get("table_sizes")
+    if isinstance(table_sizes, (list, tuple)) and table_sizes:
+        document["table_sizes"] = [int(size) for size in table_sizes]
     validate_pure_weights(document)
     return document
 

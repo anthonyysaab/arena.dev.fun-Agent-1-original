@@ -135,6 +135,13 @@ class PurePolicy(DecisionRules):
             with open(path, encoding="utf-8") as handle:
                 weights = json.load(handle)
         self.forward = TinyPolicyForward(weights)
+        # Table sizes whose short-handed decisions the network itself drives
+        # (self-play-trained checkpoints declare these). Absent or empty
+        # means the deterministic equity thresholds keep short-handed play.
+        raw_sizes = weights.get("table_sizes") or ()
+        self.table_sizes = frozenset(
+            int(size) for size in raw_sizes if isinstance(size, (int, float))
+        )
 
     @staticmethod
     def _weights_path(value: str | Path | None) -> Path:
@@ -161,6 +168,20 @@ class PurePolicy(DecisionRules):
 
     def _family(self, features: tuple[float, ...]) -> str:
         return masked_family(self.forward.logits(features), features)
+
+    def _short_handed_family(
+        self,
+        table,
+        allowed,
+        available,
+        equity,
+        features=None,
+    ) -> str:
+        if features is not None and len(table["seats"]) in self.table_sizes:
+            return self._family(features)
+        return super()._short_handed_family(
+            table, allowed, available, equity, features=features
+        )
 
 
 __all__ = [

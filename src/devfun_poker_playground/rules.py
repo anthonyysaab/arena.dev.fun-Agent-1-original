@@ -199,7 +199,7 @@ class DecisionRules:
         equity = self._equity(table, top_fraction=self._call_top_fraction(table, allowed))
         _, seats = _hero_and_seats(table)
         family = (
-            self._short_handed_family(table, allowed, available, equity)
+            self._short_handed_family(table, allowed, available, equity, features=features)
             if len(seats) < 6 and equity is not None
             else self._family(features)
         )
@@ -217,7 +217,9 @@ class DecisionRules:
         allowed: Mapping[str, Any],
         available: set[str],
         equity: float,
+        features: tuple[float, ...] | None = None,
     ) -> str:
+        del features  # Equity thresholds decide here; model backends may use them.
         _, seats = _hero_and_seats(table)
         opponent_count = max(1, len(seats) - 1)
         aggression_floor = min(0.72, 0.52 + 0.05 * max(0, opponent_count - 1))
